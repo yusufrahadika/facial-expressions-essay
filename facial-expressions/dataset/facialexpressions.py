@@ -17,8 +17,7 @@ class FacialExpressionsDataset(Dataset):
         self.csv_data[2] = self.csv_data[2].str.lower()
         self.csv_data[2] = self.csv_data[2].replace(
             ["happiness", "sadness"], ["happy", "sad"])
-        self.emotions = ["neutral", "happy", "surprise", "sad",
-                         "anger", "disgust", "fear", "contempt", "uncertain", "NF"]
+        self.emotions = ["neutral", "happy", "surprise", "sad", "anger", "disgust", "fear", "contempt"]
         self.csv_data = self.csv_data.to_numpy()
         self.transform = transform
 
