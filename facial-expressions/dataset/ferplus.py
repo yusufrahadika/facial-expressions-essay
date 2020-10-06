@@ -19,11 +19,13 @@ class FERPlusDataset(Dataset):
 
         self.directory_path = directory_path
         self.subset = subset
-        self.csv_data = pd.read_csv(
-            f"{directory_path}/data/{self.inner_path}/label.csv", header=None).to_numpy()
-        self.csv_data = self.csv_data[:, :-2]
-        self.emotions = ["neutral", "happy", "surprise", "sad", "anger", "disgust", "fear", "contempt"]
         self.transform = transform
+        self.emotions = ["neutral", "happy", "surprise",
+                         "sad", "anger", "disgust", "fear", "contempt"]
+        self.csv_data = pd.read_csv(
+            f"{directory_path}/data/{self.inner_path}/label.csv", header=None)
+        self.csv_data = np.asarray(
+            [row[:-2] for _, row in self.csv_data.iterrows() if row[2:].to_numpy().argmax() < len(self.emotions)])
 
     def __len__(self):
         return len(self.csv_data)
@@ -35,5 +37,5 @@ class FERPlusDataset(Dataset):
         img = img.convert("RGB")
         if self.transform:
             img = self.transform(img)
-        
+
         return img, np.argmax(row[2:])
