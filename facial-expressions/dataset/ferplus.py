@@ -21,8 +21,8 @@ class FERPlusDataset(Dataset):
         self.subset = subset
         self.csv_data = pd.read_csv(
             f"{directory_path}/data/{self.inner_path}/label.csv", header=None).to_numpy()
-        self.emotions = ["neutral", "happy", "surprise", "sad",
-                         "anger", "disgust", "fear", "contempt", "uncertain", "NF"]
+        self.csv_data = self.csv_data[:, :-2]
+        self.emotions = ["neutral", "happy", "surprise", "sad", "anger", "disgust", "fear", "contempt"]
         self.transform = transform
 
     def __len__(self):
