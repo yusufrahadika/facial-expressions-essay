@@ -33,3 +33,6 @@ class FacialExpressionsDataset(Dataset):
             img = self.transform(img)
 
         return img, self.emotions.index(row[1])
+    
+    def get_labels(self):
+        return [self.emotions.index(row[1]) for row in self.csv_data]

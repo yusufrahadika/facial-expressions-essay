@@ -45,3 +45,6 @@ class RAFDataset(Dataset):
             img = self.transform(img)
 
         return img, row[1]
+    
+    def get_labels(self):
+        return [row[1] for row in self.csv_data]

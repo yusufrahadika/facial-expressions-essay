@@ -39,3 +39,6 @@ class FERPlusDataset(Dataset):
             img = self.transform(img)
 
         return img, np.argmax(row[2:])
+    
+    def get_labels(self):
+        return [np.argmax(row[2:]) for row in self.csv_data]
