@@ -5,12 +5,14 @@ import torch
 import wandb
 from sklearn.metrics import accuracy_score
 from torch import optim
+from torch_lr_finder import LRFinder
 from tqdm.auto import tqdm, trange
 
 
 class Trainer:
     def __init__(self, project_name, model, device, dataloader, classes, criterion,
-                 optimizer=None, optimizer_params={}, optimizer_name="sgd", scheduler=None,
+                 optimizer=None, optimizer_params={"lr": 1e-3}, optimizer_name="sgd", scheduler=None,
+                 lr_find=True, lr_finder_params={"start_lr": 1e-8, "end_lr": 1, "num_iter": 100, "step_mode": "exp"},
                  max_epoch=5, max_step=None, gradient_accumulation=1,
                  valloader=None, logging_steps=100, validation_steps=500):
         wandb.init(project=project_name)
@@ -32,8 +34,21 @@ class Trainer:
 
         self.optimizer = self.__class__.get_optimizer(
             self.model, optimizer_name, optimizer_params) if optimizer is None else optimizer
+
+        suggested_lr = None
+
+        if lr_find:
+            config.lr_finder_params = lr_finder_params
+            lr_finder = LRFinder(self.model, self.optimizer,
+                                 self.criterion, device=self.device)
+            lr_finder.range_test(self.dataloader, val_loader=self.valloader, **lr_finder_params,
+                                 accumulation_steps=gradient_accumulation)
+            _, suggested_lr = lr_finder.plot()
+
+        print(suggested_lr)
+
         self.scheduler = optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=optimizer_params.get(
-            "lr", 0.01), total_steps=self.max_step) if scheduler is None else scheduler
+            "lr", 0.01) if suggested_lr is None else suggested_lr, total_steps=self.max_step) if scheduler is None else scheduler
 
         # wandb logging
         config.batch_size = dataloader.batch_size
