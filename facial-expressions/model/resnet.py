@@ -1,16 +1,110 @@
 import torch
-from torch import nn
+from torch import nn, Tensor
+from typing import Callable, Optional
 
 
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
     """3x3 convolution with padding"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=dilation, groups=groups, bias=False, dilation=dilation)
+    return nn.Conv2d(
+        in_planes,
+        out_planes,
+        kernel_size=3,
+        stride=stride,
+        padding=dilation,
+        groups=groups,
+        bias=False,
+        dilation=dilation,
+    )
 
 
 def conv1x1(in_planes, out_planes, stride=1):
     """1x1 convolution"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+
+
+class BasicBlock(nn.Module):
+    expansion: int = 1
+
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        downsample: Optional[nn.Module] = None,
+        groups: int = 1,
+        base_width: int = 64,
+        dilation: int = 1,
+        network_type: Optional[str] = "plain",
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+        activation_layer=None,
+        output_block={"class": None, "params": {}},
+    ) -> None:
+        super().__init__()
+        self.network_type = network_type
+
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        if activation_layer is None:
+            activation_layer = nn.ReLU(inplace=True)
+        if groups != 1 or base_width != 64:
+            raise ValueError('BasicBlock only supports groups=1 and base_width=64')
+        if dilation > 1:
+            raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
+        # Both self.conv1 and self.downsample layers downsample the input when stride != 1
+        self.conv1 = conv3x3(inplanes, planes, stride)
+        if self.network_type in ("preact", "pyramid"):
+            self.bn1 = norm_layer(inplanes)
+        else:
+            self.bn1 = norm_layer(planes)
+        self.activation_layer = activation_layer
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = norm_layer(planes)
+        if self.network_type == "pyramid":
+            self.bn3 = norm_layer(planes * self.expansion)
+        self.output_block = (
+            None
+            if output_block["class"] is None
+            else output_block["class"](
+                planes * self.expansion, **output_block["params"]
+            )
+        )
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x: Tensor) -> Tensor:
+        identity = x
+
+        out = x
+        if self.network_type in ("preact", "pyramid"):
+            out = self.bn1(out)
+            if self.network_type == "preact":
+                out = self.activation_layer(out)
+        out = self.conv1(out)
+        if self.network_type == "plain":
+            out = self.bn1(out)
+            out = self.activation_layer(out)
+
+        if self.network_type in ("preact", "pyramid"):
+            out = self.bn2(out)
+            out = self.activation_layer(out)
+        out = self.conv2(out)
+        if self.network_type == "plain":
+            out = self.bn2(out)
+
+        if self.network_type == "pyramid":
+            out = self.bn3(out)
+
+        if self.output_block is not None:
+            out = self.output_block(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        if self.network_type == "plain":
+            out = self.activation_layer(out)
+
+        return out
 
 
 class Bottleneck(nn.Module):
@@ -22,16 +116,27 @@ class Bottleneck(nn.Module):
 
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1,
-                 network_type="plain", norm_layer=None, activation_layer=None):
+    def __init__(
+        self,
+        inplanes,
+        planes,
+        stride=1,
+        downsample=None,
+        groups=1,
+        base_width=64,
+        dilation=1,
+        network_type="plain",
+        norm_layer=None,
+        activation_layer=None,
+        output_block={"class": None, "params": {}},
+    ):
         super().__init__()
         self.network_type = network_type
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         if activation_layer is None:
             activation_layer = nn.ReLU(inplace=True)
-        width = int(planes * (base_width / 64.)) * groups
+        width = int(planes * (base_width / 64.0)) * groups
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv1x1(inplanes, width)
         if self.network_type in ("preact", "pyramid"):
@@ -48,6 +153,13 @@ class Bottleneck(nn.Module):
         if self.network_type == "pyramid":
             self.bn4 = norm_layer(planes * self.expansion)
         self.activation_layer = activation_layer
+        self.output_block = (
+            None
+            if output_block["class"] is None
+            else output_block["class"](
+                planes * self.expansion, **output_block["params"]
+            )
+        )
         self.downsample = downsample
         self.stride = stride
 
@@ -82,6 +194,9 @@ class Bottleneck(nn.Module):
         if self.network_type == "pyramid":
             out = self.bn4(out)
 
+        if self.output_block is not None:
+            out = self.output_block(out)
+
         if self.downsample is not None:
             identity = self.downsample(x)
 
@@ -93,10 +208,20 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-
-    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,
-                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
-                 network_type="plain", norm_layer=None, activation_layer=None):
+    def __init__(
+        self,
+        block,
+        layers,
+        num_classes=1000,
+        zero_init_residual=False,
+        groups=1,
+        width_per_group=64,
+        replace_stride_with_dilation=None,
+        network_type="plain",
+        norm_layer=None,
+        activation_layer=None,
+        output_block={"class": None, "params": {}},
+    ):
         super().__init__()
         self.network_type = network_type
 
@@ -107,6 +232,8 @@ class ResNet(nn.Module):
         if activation_layer is None:
             activation_layer = nn.ReLU(inplace=True)
 
+        self.output_block = output_block
+
         self.inplanes = 64
         self.dilation = 1
         if replace_stride_with_dilation is None:
@@ -114,29 +241,34 @@ class ResNet(nn.Module):
             # the 2x2 stride with a dilated convolution instead
             replace_stride_with_dilation = [False, False, False]
         if len(replace_stride_with_dilation) != 3:
-            raise ValueError("replace_stride_with_dilation should be None "
-                             "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
+            raise ValueError(
+                "replace_stride_with_dilation should be None "
+                "or a 3-element tuple, got {}".format(replace_stride_with_dilation)
+            )
         self.groups = groups
         self.base_width = width_per_group
-        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
-                               bias=False)
+        self.conv1 = nn.Conv2d(
+            3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False
+        )
         self.bn1 = norm_layer(self.inplanes)
         self.activation_layer = activation_layer
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2,
-                                       dilate=replace_stride_with_dilation[0])
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2,
-                                       dilate=replace_stride_with_dilation[1])
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
-                                       dilate=replace_stride_with_dilation[2])
+        self.layer2 = self._make_layer(
+            block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0]
+        )
+        self.layer3 = self._make_layer(
+            block, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1]
+        )
+        self.layer4 = self._make_layer(
+            block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2]
+        )
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(
-                    m.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
@@ -165,15 +297,36 @@ class ResNet(nn.Module):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample, self.groups,
-                            self.base_width, previous_dilation,
-                            self.network_type, norm_layer, self.activation_layer))
+        layers.append(
+            block(
+                self.inplanes,
+                planes,
+                stride,
+                downsample,
+                self.groups,
+                self.base_width,
+                previous_dilation,
+                self.network_type,
+                norm_layer,
+                self.activation_layer,
+                self.output_block,
+            )
+        )
         self.inplanes = planes * block.expansion
         for _ in range(1, blocks):
-            layers.append(block(self.inplanes, planes, groups=self.groups,
-                                base_width=self.base_width, dilation=self.dilation,
-                                network_type=self.network_type,
-                                norm_layer=norm_layer, activation_layer=self.activation_layer))
+            layers.append(
+                block(
+                    self.inplanes,
+                    planes,
+                    groups=self.groups,
+                    base_width=self.base_width,
+                    dilation=self.dilation,
+                    network_type=self.network_type,
+                    norm_layer=norm_layer,
+                    activation_layer=self.activation_layer,
+                    output_block=self.output_block,
+                )
+            )
 
         return nn.Sequential(*layers)
 
@@ -204,13 +357,13 @@ def _resnet(arch, block, layers, **kwargs):
     return model
 
 
+def custom_resnet18(**kwargs):
+    return _resnet("resnet18", BasicBlock, [2, 2, 2, 2], **kwargs)
+
+
+def custom_resnet34(**kwargs):
+    return _resnet("resnet34", BasicBlock, [3, 4, 6, 3], **kwargs)
+
+
 def custom_resnet50(**kwargs):
-    r"""ResNet-50 model from
-    `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_
-    """
-    return _resnet('resnet50', Bottleneck, [3, 4, 6, 3], **kwargs)
-
-
-if __name__ == "__main__":
-    model = custom_resnet50()
-    print(model)
+    return _resnet("resnet50", Bottleneck, [3, 4, 6, 3], **kwargs)
