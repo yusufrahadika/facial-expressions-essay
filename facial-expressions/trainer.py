@@ -5,7 +5,6 @@ import torch
 import wandb
 from sklearn.metrics import accuracy_score
 from torch import optim
-from torch_lr_finder import LRFinder
 from tqdm.auto import tqdm, trange
 
 
@@ -38,6 +37,7 @@ class Trainer:
         suggested_lr = None
 
         if lr_find:
+            from torch_lr_finder import LRFinder
             config.lr_finder_params = lr_finder_params
             lr_finder = LRFinder(self.model, self.optimizer,
                                  self.criterion, device=self.device)
