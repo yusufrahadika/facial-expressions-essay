@@ -136,6 +136,8 @@ class Trainer:
         actual_steps = 0
         running_loss = 0
         start_epoch = 0
+        accuracy_true = 0
+        accuracy_total = 0
 
         if self.checkpoint is not None:
             self.model.load_state_dict(self.checkpoint["model_state_dict"])
@@ -147,6 +149,9 @@ class Trainer:
             running_loss = self.checkpoint["loss"]
             start_epoch = self.checkpoint["epoch"] + 1
             print("Resuming from epoch", start_epoch)
+
+            accuracy_true = self.checkpoint["accuracy_true"]
+            accuracy_total = self.checkpoint["accuracy_total"]
 
         for epoch in range(
             start_epoch, self.max_epoch
@@ -160,6 +165,10 @@ class Trainer:
                 with torch.cuda.amp.autocast():
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, labels)
+
+                _, predicted = torch.max(outputs, 1)
+                accuracy_true += (predicted == labels).sum()
+                accuracy_total += predicted.size(0)
 
                 loss.backward()
                 running_loss += loss.item()
@@ -181,12 +190,15 @@ class Trainer:
                         wandb.log(
                             {
                                 "training_loss": current_loss,
+                                "training_accuracy": accuracy_true / accuracy_total,
                                 "learning_rate": self.scheduler.get_last_lr()[0],
                             },
                             step=global_steps,
                         )
                         # print('[%d, %5d] loss: %.3f' % (epoch + 1, global_steps, current_loss))
                         running_loss = 0
+                        accuracy_true = 0
+                        accuracy_total = 0
 
                     if (
                         self.validation_steps > 0
@@ -228,6 +240,8 @@ class Trainer:
                     "step": global_steps,
                     "actual_step": actual_steps,
                     "loss": running_loss,
+                    "accuracy_true": accuracy_true,
+                    "accuracy_total": accuracy_total,
                 },
                 f"{self.output_path}-{epoch}.pt",
             )
