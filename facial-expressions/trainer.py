@@ -141,7 +141,7 @@ class Trainer:
             self.model.load_state_dict(self.checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(self.checkpoint["optimizer_state_dict"])
             self.scheduler.load_state_dict(self.checkpoint["scheduler_state_dict"])
-            
+
             global_steps = self.checkpoint["step"]
             actual_steps = self.checkpoint["actual_step"]
             running_loss = self.checkpoint["loss"]
@@ -238,6 +238,7 @@ class Trainer:
                 )
 
         print("Training completed")
+        torch.save(self.model.state_dict(), f"{self.output_path}.pt")
 
     def evaluation(self, dataloader):
         self.model.eval()
