@@ -13,7 +13,8 @@ class Trainer:
                  optimizer=None, optimizer_params={"lr": 1e-3}, optimizer_name="sgd", scheduler=None,
                  lr_find=True, lr_finder_params={"start_lr": 1e-8, "end_lr": 1, "num_iter": 100, "step_mode": "exp"},
                  max_epoch=5, max_step=None, gradient_accumulation=1,
-                 valloader=None, logging_steps=100, validation_steps=500):
+                 valloader=None, logging_steps=100, validation_steps=500,
+                 transform_func=None, val_criterion=None):
         wandb.init(project=project_name)
         config = wandb.config
 
@@ -23,6 +24,8 @@ class Trainer:
         self.valloader = valloader
         self.classes = classes
         self.criterion = criterion
+        self.transform_func = transform_func
+        self.val_criterion = criterion if val_criterion is None else val_criterion
         config.logging_steps = self.logging_steps = logging_steps
         config.validation_steps = self.validation_steps = validation_steps
         config.gradient_accumulation = self.gradient_accumulation = gradient_accumulation
@@ -72,6 +75,8 @@ class Trainer:
         for epoch in range(self.max_epoch):  # loop over the dataset multiple times
             for i, (inputs, labels) in enumerate(tqdm(self.dataloader, desc="Step")):
                 self.model.train()
+                if self.transform_func is not None:
+                    inputs, labels = self.transform_func(inputs, labels)
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
 
                 with torch.cuda.amp.autocast():
@@ -123,7 +128,7 @@ class Trainer:
             inputs, labels = inputs.to(self.device), labels.to(self.device)
             with torch.cuda.amp.autocast():
                 outputs = self.model(inputs)
-                calculated_loss = self.criterion(outputs, labels)
+                calculated_loss = self.val_criterion(outputs, labels)
 
             _, predicted = torch.max(outputs, 1)
             eval_loss += calculated_loss.item()
