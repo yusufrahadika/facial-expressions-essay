@@ -1,4 +1,5 @@
 import torch
+from dropblock import DropBlock2D, LinearScheduler
 from torch import nn, Tensor
 from typing import Callable, Optional
 
@@ -47,7 +48,7 @@ class BasicBlock(nn.Module):
         if activation_layer is None:
             activation_layer = nn.ReLU(inplace=True)
         if groups != 1 or base_width != 64:
-            raise ValueError('BasicBlock only supports groups=1 and base_width=64')
+            raise ValueError("BasicBlock only supports groups=1 and base_width=64")
         if dilation > 1:
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
@@ -221,6 +222,7 @@ class ResNet(nn.Module):
         norm_layer=None,
         activation_layer=None,
         output_block={"class": None, "params": {}},
+        dropblock={"drop_prob": 0.0},
     ):
         super().__init__()
         self.network_type = network_type
@@ -266,6 +268,16 @@ class ResNet(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
+        if dropblock["drop_prob"] != 0.0 and dropblock.get("max_steps", None) is None:
+            raise ValueError("Max steps must be specified when using dropblock")
+
+        self.dropblock = LinearScheduler(
+            DropBlock2D(block_size=dropblock.get("block_size", 7), drop_prob=0.0),
+            start_value=0.0,
+            stop_value=dropblock["drop_prob"],
+            nr_steps=dropblock.get("max_steps", 0),
+        )
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
@@ -278,10 +290,14 @@ class ResNet(nn.Module):
         # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
         if zero_init_residual:
             for m in self.modules():
-                if self.network_type == "plain":
+                if (isinstance(m, Bottleneck) and self.network_type == "plain") or (
+                    isinstance(m, BasicBlock) and self.network_type == "pyramid"
+                ):
                     nn.init.constant_(m.bn3.weight, 0)
-                elif self.network_type == "pyramid":
+                elif isinstance(m, Bottleneck) and self.network_type == "pyramid":
                     nn.init.constant_(m.bn4.weight, 0)
+                elif isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0)
 
     def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
         norm_layer = self._norm_layer
@@ -339,8 +355,8 @@ class ResNet(nn.Module):
 
         x = self.layer1(x)
         x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        x = self.dropblock(self.layer3(x))
+        x = self.dropblock(self.layer4(x))
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
@@ -350,6 +366,9 @@ class ResNet(nn.Module):
 
     def forward(self, x):
         return self._forward_impl(x)
+
+    def step(self):
+        self.dropblock.step()
 
 
 def _resnet(arch, block, layers, **kwargs):
