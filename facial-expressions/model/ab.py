@@ -25,4 +25,4 @@ class AccuracyBoosterBlock(OutputBlock):
 
 class AccuracyBoosterPlusBlock(AccuracyBoosterBlock):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, *kwargs, plus=True)
+        super().__init__(*args, **kwargs, plus=True)
