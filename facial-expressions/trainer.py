@@ -1,3 +1,4 @@
+import gc
 import math
 import numpy as np
 import os
@@ -6,6 +7,7 @@ import torch
 import wandb
 from sklearn.metrics import accuracy_score
 from torch import optim
+from torch.cuda.amp import GradScaler, autocast
 from tqdm.auto import tqdm, trange
 
 
@@ -135,6 +137,7 @@ class Trainer:
         return optims_dict.get(optimizer_name, optims_dict["sgd"])()
 
     def train(self):
+        scaler = GradScaler()
         self.model.zero_grad()
         global_steps = 0
         actual_steps = 0
@@ -148,6 +151,7 @@ class Trainer:
             self.model.load_state_dict(self.checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(self.checkpoint["optimizer_state_dict"])
             self.scheduler.load_state_dict(self.checkpoint["scheduler_state_dict"])
+            scaler.load_state_dict(self.checkpoint["scaler_state_dict"])
 
             global_steps = self.checkpoint["step"]
             actual_steps = self.checkpoint["actual_step"]
@@ -168,21 +172,22 @@ class Trainer:
                     inputs, labels = self.transform_func(inputs, labels)
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
 
-                with torch.cuda.amp.autocast():
+                with autocast():
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, labels)
 
                 _, predicted = torch.max(outputs, 1)
-                accuracy_true += (predicted == labels).sum()
+                accuracy_true += int((predicted == labels).sum())
                 accuracy_total += predicted.size(0)
 
-                loss.backward()
+                scaler.scale(loss).backward()
                 running_loss += loss.item()
                 actual_steps += 1
 
                 if actual_steps % self.gradient_accumulation == 0:
-                    self.optimizer.step()
+                    scaler.step(self.optimizer)
                     self.scheduler.step()
+                    scaler.update()
                     self.model.zero_grad()
 
                     if hasattr(self.model, "step"):
@@ -253,6 +258,7 @@ class Trainer:
                     "model_state_dict": self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "scheduler_state_dict": self.scheduler.state_dict(),
+                    "scaler_state_dict": scaler.state_dict(),
                     "step": global_steps,
                     "actual_step": actual_steps,
                     "loss": running_loss,
@@ -267,6 +273,8 @@ class Trainer:
                 os.system(
                     f"rm -rf {self.output_path}-{epoch - self.keep_checkpoint}.pt"
                 )
+
+            gc.collect()
 
         print("Training completed")
         torch.save(self.model.state_dict(), f"{self.output_path}.pt")
