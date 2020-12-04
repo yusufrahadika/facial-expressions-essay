@@ -1,3 +1,4 @@
+import gc
 import math
 import numpy as np
 import os
@@ -6,6 +7,7 @@ import torch
 import wandb
 from sklearn.metrics import accuracy_score
 from torch import optim
+from torch.cuda.amp import GradScaler, autocast
 from tqdm.auto import tqdm, trange
 
 
@@ -32,7 +34,8 @@ class Trainer:
         max_epoch=5,
         max_step=None,
         gradient_accumulation=1,
-        valloader=None,
+        valloaders=None,
+        main_val_loader_index=0,
         logging_steps=100,
         validation_steps=500,
         keep_checkpoint=2,
@@ -52,10 +55,11 @@ class Trainer:
         print("Output path:", self.output_path)
         self.keep_checkpoint = keep_checkpoint
 
-        self.model = model
+        self.model = model.to(device)
         self.device = device
         self.dataloader = dataloader
-        self.valloader = valloader
+        self.valloaders = valloaders
+        self.main_val_loader_index = main_val_loader_index
         self.classes = classes
         self.criterion = criterion
         self.transform_func = transform_func
@@ -93,7 +97,9 @@ class Trainer:
             )
             lr_finder.range_test(
                 self.dataloader,
-                val_loader=self.valloader,
+                val_loader=self.valloaders[main_val_loader_index][1]
+                if self.valloaders
+                else None,
                 **lr_finder_params,
                 accumulation_steps=gradient_accumulation,
             )
@@ -131,6 +137,7 @@ class Trainer:
         return optims_dict.get(optimizer_name, optims_dict["sgd"])()
 
     def train(self):
+        scaler = GradScaler()
         self.model.zero_grad()
         global_steps = 0
         actual_steps = 0
@@ -138,11 +145,13 @@ class Trainer:
         start_epoch = 0
         accuracy_true = 0
         accuracy_total = 0
+        best_val_acc = 0
 
         if self.checkpoint is not None:
             self.model.load_state_dict(self.checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(self.checkpoint["optimizer_state_dict"])
             self.scheduler.load_state_dict(self.checkpoint["scheduler_state_dict"])
+            scaler.load_state_dict(self.checkpoint["scaler_state_dict"])
 
             global_steps = self.checkpoint["step"]
             actual_steps = self.checkpoint["actual_step"]
@@ -152,6 +161,7 @@ class Trainer:
 
             accuracy_true = self.checkpoint["accuracy_true"]
             accuracy_total = self.checkpoint["accuracy_total"]
+            best_val_acc = self.checkpoint["best_val_acc"]
 
         for epoch in range(
             start_epoch, self.max_epoch
@@ -162,22 +172,26 @@ class Trainer:
                     inputs, labels = self.transform_func(inputs, labels)
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
 
-                with torch.cuda.amp.autocast():
+                with autocast():
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, labels)
 
                 _, predicted = torch.max(outputs, 1)
-                accuracy_true += (predicted == labels).sum()
+                accuracy_true += int((predicted == labels).sum())
                 accuracy_total += predicted.size(0)
 
-                loss.backward()
+                scaler.scale(loss).backward()
                 running_loss += loss.item()
                 actual_steps += 1
 
                 if actual_steps % self.gradient_accumulation == 0:
-                    self.optimizer.step()
+                    scaler.step(self.optimizer)
                     self.scheduler.step()
+                    scaler.update()
                     self.model.zero_grad()
+
+                    if hasattr(self.model, "step"):
+                        self.model.step()
 
                     global_steps += 1
 
@@ -204,29 +218,36 @@ class Trainer:
                         self.validation_steps > 0
                         and global_steps % self.validation_steps == 0
                     ):
-                        if self.valloader is not None:
-                            y_val_pred, y_val_actual, y_val_loss = self.evaluation(
-                                self.valloader
-                            )
-                            wandb.log(
-                                {
-                                    "val_loss": y_val_loss,
-                                    "val_accuracy": accuracy_score(
-                                        y_val_actual, y_val_pred
-                                    ),
-                                    "roc": wandb.plots.ROC(
-                                        y_val_actual,
-                                        self.to_binary(y_val_pred),
-                                        self.classes,
-                                    ),
-                                    "pr": wandb.plots.precision_recall(
-                                        y_val_actual,
-                                        self.to_binary(y_val_pred),
-                                        self.classes,
-                                    ),
-                                },
-                                step=global_steps,
-                            )
+                        if self.valloaders is not None:
+                            val_better = False
+                            for valloader_index, (
+                                valloader_name,
+                                valloader,
+                            ) in enumerate(self.valloaders):
+                                y_val_pred, y_val_actual, y_val_loss = self.evaluation(
+                                    valloader
+                                )
+                                val_acc_score = accuracy_score(y_val_actual, y_val_pred)
+                                wandb.log(
+                                    {
+                                        f"{valloader_name}_val_loss": y_val_loss,
+                                        f"{valloader_name}_val_accuracy": val_acc_score,
+                                    },
+                                    step=global_steps,
+                                )
+
+                                if (
+                                    valloader_index == self.main_val_loader_index
+                                    and val_acc_score > best_val_acc
+                                ):
+                                    best_val_acc = val_acc_score
+                                    val_better = True
+
+                            if val_better:
+                                torch.save(
+                                    self.model.state_dict(),
+                                    f"{self.output_path}-best.pt",
+                                )
 
                     if global_steps == self.max_step:
                         break
@@ -237,11 +258,13 @@ class Trainer:
                     "model_state_dict": self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "scheduler_state_dict": self.scheduler.state_dict(),
+                    "scaler_state_dict": scaler.state_dict(),
                     "step": global_steps,
                     "actual_step": actual_steps,
                     "loss": running_loss,
                     "accuracy_true": accuracy_true,
                     "accuracy_total": accuracy_total,
+                    "best_val_acc": best_val_acc,
                 },
                 f"{self.output_path}-{epoch}.pt",
             )
@@ -250,6 +273,8 @@ class Trainer:
                 os.system(
                     f"rm -rf {self.output_path}-{epoch - self.keep_checkpoint}.pt"
                 )
+
+            gc.collect()
 
         print("Training completed")
         torch.save(self.model.state_dict(), f"{self.output_path}.pt")
