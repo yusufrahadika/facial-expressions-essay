@@ -6,7 +6,19 @@ from .gc import centralized_gradient
 
 
 class RAdam(Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, N_sma_threshhold=5, use_gc=True, gc_conv_only=False, gc_loc=True, diffgrad=True):
+    def __init__(
+        self,
+        params,
+        lr=1e-3,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=0,
+        N_sma_threshhold=5,
+        use_gc=True,
+        gc_conv_only=False,
+        gc_loc=True,
+        diffgrad=True,
+    ):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= eps:
@@ -15,7 +27,7 @@ class RAdam(Optimizer):
             raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
         if not 0.0 <= betas[1] < 1.0:
             raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-            
+
         buffer = [None, None, None]
 
         if (
@@ -37,20 +49,21 @@ class RAdam(Optimizer):
             N_sma_threshhold=N_sma_threshhold,
         )
         super().__init__(params, defaults)
-        
+
         # gc on or off
         self.gc_loc = gc_loc
         self.use_gc = use_gc
         self.gc_conv_only = gc_conv_only
-        
+
         # diffgrad
         self.diffgrad = diffgrad
-        
+
         print(
-            f"RAdam optimizer loaded. \nGradient Centralization usage = {self.use_gc} \nDiffgrad usage = {self.diffgrad}")
-        if (self.use_gc and self.gc_conv_only == False):
+            f"RAdam optimizer loaded. \nGradient Centralization usage = {self.use_gc} \nDiffgrad usage = {self.diffgrad}"
+        )
+        if self.use_gc and self.gc_conv_only == False:
             print(f"GC applied to both conv and fc layers")
-        elif (self.use_gc and self.gc_conv_only == True):
+        elif self.use_gc and self.gc_conv_only == True:
             print(f"GC applied to conv layers only")
 
     def step(self, closure=None):
@@ -72,18 +85,20 @@ class RAdam(Optimizer):
                     state["step"] = 0
                     state["exp_avg"] = torch.zeros_like(p_data_fp32)
                     state["exp_avg_sq"] = torch.zeros_like(p_data_fp32)
-                    state['previous_grad'] = torch.zeros_like(p.data)
+                    state["previous_grad"] = torch.zeros_like(p.data)
                 else:
                     state["exp_avg"] = state["exp_avg"].type_as(p_data_fp32)
                     state["exp_avg_sq"] = state["exp_avg_sq"].type_as(p_data_fp32)
 
                 exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
-                previous_grad = state['previous_grad']
+                previous_grad = state["previous_grad"]
                 beta1, beta2 = group["betas"]
-                
+
                 # GC operation for Conv layers and FC layers
                 if self.gc_loc:
-                    grad = centralized_gradient(grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only)
+                    grad = centralized_gradient(
+                        grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only
+                    )
 
                 # Decay the first and second moment running average coefficient
                 # m_t
@@ -121,18 +136,30 @@ class RAdam(Optimizer):
 
                 if group["weight_decay"] != 0:
                     p_data_fp32.add_(-group["weight_decay"] * group["lr"], p_data_fp32)
-                
+
                 # GC operation
                 if self.gc_loc == False:
-                    G_grad = centralized_gradient(G_grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only)
+                    G_grad = centralized_gradient(
+                        G_grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only
+                    )
+
+                # Ignore this variable if not using DiffGrad
+                friction = 1.0
+                if self.diffgrad:
+                    diff = torch.norm(previous_grad - grad)
+                    # Calculate DiffGrad Friction Coefficient
+                    friction = abs(torch.sigmoid(diff))
+                    state["previous_grad"] = grad.clone()
 
                 # more conservative since it's an approximated value
                 if N_sma >= 5:
                     denom = exp_avg_sq.sqrt().add_(group["eps"])
-                    p_data_fp32.addcdiv_(-step_size * group["lr"], exp_avg, denom)
+                    p_data_fp32.addcdiv_(
+                        -step_size * friction * group["lr"], exp_avg, denom
+                    )
                 else:
-                    p_data_fp32.add_(-step_size * group["lr"], exp_avg)
-                
+                    p_data_fp32.add_(-step_size * friction * group["lr"], exp_avg)
+
                 p.data.copy_(p_data_fp32)
 
         return loss
