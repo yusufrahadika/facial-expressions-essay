@@ -102,9 +102,9 @@ class RAdam(Optimizer):
 
                 # Decay the first and second moment running average coefficient
                 # m_t
-                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
                 # v_t
-                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                 state["step"] += 1
                 buffered = group["buffer"]
@@ -135,7 +135,9 @@ class RAdam(Optimizer):
                     buffered[2] = step_size
 
                 if group["weight_decay"] != 0:
-                    p_data_fp32.add_(-group["weight_decay"] * group["lr"], p_data_fp32)
+                    p_data_fp32.add_(
+                        p_data_fp32, alpha=-group["weight_decay"] * group["lr"]
+                    )
 
                 # GC operation
                 if self.gc_loc == False:
@@ -155,10 +157,10 @@ class RAdam(Optimizer):
                 if N_sma >= 5:
                     denom = exp_avg_sq.sqrt().add_(group["eps"])
                     p_data_fp32.addcdiv_(
-                        -step_size * friction * group["lr"], exp_avg, denom
+                        exp_avg, denom, value=-step_size * friction * group["lr"]
                     )
                 else:
-                    p_data_fp32.add_(-step_size * friction * group["lr"], exp_avg)
+                    p_data_fp32.add_(exp_avg, alpha=-step_size * friction * group["lr"])
 
                 p.data.copy_(p_data_fp32)
 
