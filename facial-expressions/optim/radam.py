@@ -18,6 +18,8 @@ class RAdam(Optimizer):
         gc_conv_only=False,
         gc_loc=True,
         diffgrad=True,
+        adabelief=False,
+        weight_decouple=False,
     ):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
@@ -50,17 +52,19 @@ class RAdam(Optimizer):
         )
         super().__init__(params, defaults)
 
-        # gc on or off
+        self.weight_decouple = weight_decouple
+
         self.gc_loc = gc_loc
         self.use_gc = use_gc
         self.gc_conv_only = gc_conv_only
 
-        # diffgrad
         self.diffgrad = diffgrad
+        self.adabelief = adabelief
 
         print(
             f"RAdam optimizer loaded. \nGradient Centralization usage = {self.use_gc} \nDiffgrad usage = {self.diffgrad}"
         )
+        print(f"Adabelief usage = {self.adabelief}")
         if self.use_gc and self.gc_conv_only == False:
             print(f"GC applied to both conv and fc layers")
         elif self.use_gc and self.gc_conv_only == True:
@@ -94,7 +98,7 @@ class RAdam(Optimizer):
                 previous_grad = state["previous_grad"]
                 beta1, beta2 = group["betas"]
 
-                # GC operation for Conv layers and FC layers
+                # GC operation before
                 if self.gc_loc:
                     grad = centralized_gradient(
                         grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only
@@ -102,9 +106,14 @@ class RAdam(Optimizer):
 
                 # Decay the first and second moment running average coefficient
                 # m_t
-                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
                 # v_t
-                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                if self.adabelief:
+                    exp_avg_sq.mul_(beta2).addcmul_(
+                        grad - exp_avg, grad - exp_avg, value=1 - beta2
+                    )
+                else:
+                    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                 state["step"] += 1
                 buffered = group["buffer"]
@@ -119,7 +128,7 @@ class RAdam(Optimizer):
                     buffered[1] = N_sma
 
                     # more conservative since it's an approximated value
-                    if N_sma >= 5:
+                    if N_sma >= group["N_sma_threshhold"]:
                         step_size = math.sqrt(
                             (1 - beta2_t)
                             * (N_sma - 4)
@@ -134,32 +143,32 @@ class RAdam(Optimizer):
                     step_size /= 1 - beta1_t
                     buffered[2] = step_size
 
-                if group["weight_decay"] != 0:
-                    p_data_fp32.add_(-group["weight_decay"] * group["lr"], p_data_fp32)
+                # more conservative since it's an approximated value
+                if N_sma >= group["N_sma_threshhold"]:
+                    if self.adabelief:
+                        denom = exp_avg_sq.add_(group["eps"]).sqrt().add_(group["eps"])
+                    else:
+                        denom = exp_avg_sq.sqrt().add_(group["eps"])
+                    G_grad = exp_avg / denom
+                else:
+                    G_grad = exp_avg
 
-                # GC operation
+                if self.weight_decouple and group["weight_decay"] != 0:
+                    G_grad.add_(p_data_fp32, alpha=group["weight_decay"])
+
+                # GC operation after
                 if self.gc_loc == False:
                     G_grad = centralized_gradient(
                         G_grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only
                     )
 
-                # Ignore this variable if not using DiffGrad
                 friction = 1.0
                 if self.diffgrad:
                     diff = torch.norm(previous_grad - grad)
-                    # Calculate DiffGrad Friction Coefficient
                     friction = abs(torch.sigmoid(diff))
                     state["previous_grad"] = grad.clone()
 
-                # more conservative since it's an approximated value
-                if N_sma >= 5:
-                    denom = exp_avg_sq.sqrt().add_(group["eps"])
-                    p_data_fp32.addcdiv_(
-                        -step_size * friction * group["lr"], exp_avg, denom
-                    )
-                else:
-                    p_data_fp32.add_(-step_size * friction * group["lr"], exp_avg)
-
+                p_data_fp32.add_(G_grad, alpha=-step_size * friction * group["lr"])
                 p.data.copy_(p_data_fp32)
 
         return loss

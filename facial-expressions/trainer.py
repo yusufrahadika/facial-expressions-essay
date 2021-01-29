@@ -44,7 +44,7 @@ class Trainer:
         transform_func=None,
         val_criterion=None,
     ):
-        wandb.init(project=project_name)
+        wandb.init(project=project_name, reinit=True)
         config = wandb.config
 
         self.output_path = (
@@ -273,7 +273,7 @@ class Trainer:
                 os.system(
                     f"rm -rf {self.output_path}-{epoch - self.keep_checkpoint}.pt"
                 )
-
+            
             gc.collect()
 
         print("Training completed")

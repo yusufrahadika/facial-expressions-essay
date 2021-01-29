@@ -39,6 +39,7 @@ class BasicBlock(nn.Module):
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         activation_layer=None,
         output_block={"class": None, "params": {}},
+        without_skip=False,
     ) -> None:
         super().__init__()
         self.network_type = network_type
@@ -71,6 +72,7 @@ class BasicBlock(nn.Module):
         )
         self.downsample = downsample
         self.stride = stride
+        self.without_skip = without_skip
 
     def forward(self, x: Tensor) -> Tensor:
         identity = x
@@ -101,7 +103,9 @@ class BasicBlock(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        out += identity
+        if not self.without_skip:
+            out += identity
+
         if self.network_type == "plain":
             out = self.activation_layer(out)
 
@@ -130,6 +134,7 @@ class Bottleneck(nn.Module):
         norm_layer=None,
         activation_layer=None,
         output_block={"class": None, "params": {}},
+        without_skip=False,
     ):
         super().__init__()
         self.network_type = network_type
@@ -163,6 +168,7 @@ class Bottleneck(nn.Module):
         )
         self.downsample = downsample
         self.stride = stride
+        self.without_skip = without_skip
 
     def forward(self, x):
         identity = x
@@ -201,7 +207,9 @@ class Bottleneck(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        out += identity
+        if not self.without_skip:
+            out += identity
+
         if self.network_type == "plain":
             out = self.activation_layer(out)
 
@@ -223,9 +231,11 @@ class ResNet(nn.Module):
         activation_layer=None,
         output_block={"class": None, "params": {}},
         dropblock={"drop_prob": 0.0},
+        without_skip=False,
     ):
         super().__init__()
         self.network_type = network_type
+        self.without_skip = without_skip
 
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -326,6 +336,7 @@ class ResNet(nn.Module):
                 norm_layer,
                 self.activation_layer,
                 self.output_block,
+                self.without_skip,
             )
         )
         self.inplanes = planes * block.expansion
@@ -341,6 +352,7 @@ class ResNet(nn.Module):
                     norm_layer=norm_layer,
                     activation_layer=self.activation_layer,
                     output_block=self.output_block,
+                    without_skip=self.without_skip,
                 )
             )
 
@@ -386,3 +398,6 @@ def custom_resnet34(**kwargs):
 
 def custom_resnet50(**kwargs):
     return _resnet("resnet50", Bottleneck, [3, 4, 6, 3], **kwargs)
+
+def custom_resnet101(**kwargs):
+    return _resnet("resnet101", Bottleneck, [3, 4, 23, 3], **kwargs)
