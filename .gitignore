@@ -132,4 +132,5 @@ dmypy.json
 .vscode
 
 # Image dataset
-/dataset
+/dataset/*
+!/dataset/.gitkeep
