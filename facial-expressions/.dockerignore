@@ -9,3 +9,11 @@ wandb
 # dependency files
 adai
 fmix
+
+# docs image
+output_sample.png
+
+# trainer & test runner
+test.ipynb
+trainer.py
+training_with_trainer.ipynb

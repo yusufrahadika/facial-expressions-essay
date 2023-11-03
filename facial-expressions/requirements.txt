@@ -1,0 +1,6 @@
+dropblock
+git+https://github.com/cshubhamrao/mish-cuda.git@patch-1
+numpy>=1.20.3
+opencv-python-headless
+pillow
+streamlit

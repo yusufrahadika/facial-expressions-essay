@@ -1,11 +1,8 @@
 import os
 import random
-from multiprocessing import cpu_count
 
-import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-from imgaug import augmenters as iaa
 from mish_cuda import MishCuda
 from model.ab import AccuracyBoosterPlusBlock
 from model.resnet import custom_resnet18, custom_resnet50
@@ -22,8 +19,8 @@ import streamlit as st
 cascPath = "haarcascade_frontalface_default.xml"
 faceCascade = cv2.CascadeClassifier(cascPath)
 
-st.title("Demo Klasifikasi Wajah")
-FRAME_WINDOW = st.image([])
+st.set_page_config(page_title="Demo Klasifikasi Ekspresi Wajah")
+st.title("Demo Klasifikasi Ekspresi Wajah")
 
 classes = [
     "neutral",
@@ -44,46 +41,17 @@ model = custom_resnet50(
     },
     num_classes=len(classes),
 )
-model.load_state_dict(torch.load("output/feasible-totem-102.pt"))
+model.load_state_dict(torch.load("output/best-result.pt"))
 
 
-def check_webcam():
-    webcam_indices = []
-    for i in range(0, 10):
-        cap = cv2.VideoCapture(i)
-        is_camera = cap.isOpened()
-        if is_camera:
-            webcam_indices.append(i)
-            cap.release()
+def capture_face(image_input):
+    gray = cv2.cvtColor(image_input, cv2.COLOR_RGB2GRAY)
 
-    return webcam_indices
+    faces = faceCascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64)
+    )
 
-
-def capture_face(video_capture):
-    # got 3 frames to auto adjust webcam light
-    for i in range(3):
-        video_capture.read()
-
-    while True:
-        ret, frame = video_capture.read()
-        
-        if frame is None:
-            return None, []
-        
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        faces = faceCascade.detectMultiScale(
-            gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64)
-        )
-
-        # Draw a rectangle around the faces
-        for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        
-        rgb_frame = frame[:, :, ::-1]
-        FRAME_WINDOW.image(rgb_frame, width=480)
-
-        return rgb_frame, faces
+    return faces
 
 
 def predict(model, test_data):
@@ -98,30 +66,22 @@ def predict(model, test_data):
 
 
 if __name__ == "__main__":
-    tp = st.button("Take a Photo")
-    st.button("Restart")
-
-    result_window = st.image([])
-
-    filename = st.text_input("Enter a file path:")
+    picture_from_camera = st.camera_input('Ambil gambar')
+    picture_file = st.file_uploader('Atau unggah gambar', type=['jpeg', 'jpg', 'png'])
 
     while True:
-        video_capture = cv2.VideoCapture(1)
-        frame, faces = capture_face(video_capture)
-
-        if tp or filename:
+        if picture_from_camera is not None or picture_file is not None:
+            st.text('Gambar berhasil ditangkap')
             break
 
-    if filename:
-        try:
-            if os.path.isfile(filename):
-                cropped_faces = [np.asarray(Image.open(filename))]
-        except FileNotFoundError:
-            st.error("File not found.")
-    else:
-        cropped_faces = [frame[y : y + h, x : x + w] for (x, y, w, h) in faces]
+    input_image = Image.open(picture_from_camera if picture_from_camera is not None else picture_file).convert('RGB')
+    input_image_np = np.asarray(input_image)
+    st.image(input_image, caption='Gambar masukan', width=720)
+    cropped_faces = [input_image_np[y : y + h, x : x + w] for (x, y, w, h) in capture_face(input_image_np)]
 
     if cropped_faces:
+        st.text('Gambar wajah yang terdeteksi')
+        st.image(image=cropped_faces, width=120)
         predict_transform = transforms.Compose(
             [
                 transforms.Resize(224),
@@ -136,4 +96,7 @@ if __name__ == "__main__":
         )
 
         result = predict(model, input_image)
-        st.image(image=cropped_faces, caption=[classes[res] for res in result])
+        st.text('Hasil klasifikasi')
+        st.image(image=cropped_faces, caption=[classes[res] for res in result], width=120)
+    else:
+        st.text('Wajah tidak terdeteksi')
